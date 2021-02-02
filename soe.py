@@ -3,8 +3,11 @@
 
 import numpy as np
 import itertools
+from collections import defaultdict
 
 ROCK, PAPER, SCISSORS = range(3)
+A = list(itertools.permutations(range(3), 2))
+print(A)
 
 class InformationSet:
     def __init__(self):
@@ -50,12 +53,19 @@ def expected_utility(s1, s2):
     probs = np.array([s1[a1]*s2[a2] for a1, a2 in RPS.A])
     return sum(utility*probs)
 
-def expoitability(s1):
-    pass
+def best_response(s2):
+    return np.argmax([expected_utility([1,0,0], s2), expected_utility([0,1,0], s2), expected_utility([0,0,1], s2)])
+    
+
+def exploitability(s1):
+    return -min([expected_utility(s1, [1,0,0]), expected_utility(s1, [0,1,0]), expected_utility(s1, [0,0,1])])
 
 mixed = np.ones(3) / 3
 pure = np.array([1,0,0])
+heavy = np.array([.3, .4, .3])
 
-print(expected_utility(mixed, mixed))
-print(expected_utility(mixed, pure))
-print(expected_utility(pure, mixed))
+br = best_response(mixed)
+print(f"pure: {exploitability(pure)}")
+print(f"mixed: {exploitability(mixed)}")
+print(f"heavy: {exploitability(heavy)}")
+
