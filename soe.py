@@ -32,7 +32,7 @@ class InformationSet:
 
 class KuhnPoker:
     cards = ['J', 'Q', 'K']
-    Actions = ['B', 'C'] 
+    Actions = np.array(['B', 'C'])
 
     @staticmethod
     def is_terminal(history):
@@ -108,36 +108,6 @@ class KuhnPokerTrainer:
 
         return node_value
 
-    def br(self, players, cards, history, transition_probs, current_player):
-        if KuhnPoker.is_terminal(history):
-            return KuhnPoker.get_payoff(history, cards)
-
-        player = players[current_player]
-        opp = players[-current_player]
-
-        info_set = self.get_information_set(player.card+history)
-        if current_player == -1:
-            strategy = player.strat_map[player.card+history]
-        else:
-            strategy = info_set.get_strategy(transition_probs[current_player])
-
-        counterfactual_values = np.zeros(len(KuhnPoker.Actions))
-        for i, action in enumerate(KuhnPoker.Actions):
-            action_probability = strategy[i]
-
-            new_transition_probs = transition_probs.copy()
-            new_transition_probs[current_player] *= action_probability
-
-            counterfactual_values[i] = -self.br(players, cards, history+action, \
-                                                            new_transition_probs, -current_player)
-            
-        node_value = counterfactual_values.dot(strategy)
-        if current_player != -1:
-            for i, action in enumerate(KuhnPoker.Actions):
-                info_set.regret_sum[i] += transition_probs[-current_player] * \
-                                            (counterfactual_values[i] - node_value)
-        return node_value
-
     def train(self, iterations):
         util = 0
         for _ in range(iterations):
@@ -147,20 +117,11 @@ class KuhnPokerTrainer:
             util += self.cfr(cards, history, transition_probs, 0)
         return util
 
-    def best_response(self, players, iterations):
-        util = 0
-        for _ in range(iterations):
-            cards = KuhnPoker.deal(2, players)
-            history = ''
-            transition_probs = np.ones(len(KuhnPoker.Actions))
-            util += self.br(players, cards, history, transition_probs, 1)
-        return util
-
-
 class Player:
-    def __init__(self, strat_map=None, card=None):
+    def __init__(self, strat_map=None, card=None, strat_fn=None):
         self.strat_map = strat_map
         self.card = card
+        self.strat_fn=strat_fn
 
     def assign_mixed(self):
         for key in self.strat_map:
@@ -173,6 +134,10 @@ class Player:
 
     def get_action(self, history):
         return np.random.choice(KuhnPoker.Actions, p=self.strat_map[self.card+history])
+
+    def strat_sample(self, history):
+        return np.random.choice(KuhnPoker.Actions, p=self.strat_map[self.card+history])
+
 
     def print_strat_map(self):
         def print_tree(history, indent):
@@ -187,66 +152,159 @@ class Player:
             print_tree(card, 0)
             print()
 
-def expected_utility(players, history, cards, current_player):
+def wrap_players(p1, p2):
+    return {1:p1, -1:p2}
+
+def tau_player(players, history, card):
+    best_r = best_response(players)
+    last_action = history[0]
+    pure = np.zeros(2)
+    index = np.where(KuhnPoker.Actions == last_action)[0][0]
+    pure[index] = 1
+    best_r.strat_map[card+history] = pure
+    return best_r
+
+def calc_best_response(node_map, br_strat_map, br_player, cards, history, active_player, prob):
+    """
+    after chance node, so only decision nodes and terminal nodes left in game tree
+    """
     if KuhnPoker.is_terminal(history):
+        return KuhnPoker.get_payoff(history, cards)
+    key = cards[active_player] + history
+    next_player = (active_player + 1) % 2
+    if active_player == br_player:
+        vals = [calc_best_response(node_map, br_strat_map, br_player, cards, history + action,
+                                   next_player, prob) for action in KuhnPoker.Actions]
+        best_response_value = max(vals)
+        if key not in br_strat_map:
+            br_strat_map[key] = np.array([0.0, 0.0])
+        br_strat_map[key] = br_strat_map[key] + prob * np.array(vals, dtype=np.float64)
+        return -best_response_value
+    else:
+        strategy = node_map[key]
+        action_values = [calc_best_response(node_map, br_strat_map, br_player, cards,
+                                            history + action, next_player, prob * strategy[ix])
+                         for ix, action in enumerate(KuhnPoker.Actions)]
+        return -np.dot(strategy, action_values)
+
+def best_response(players):
+    player = list(players.values())[0]
+    br = {}
+    for cards in itertools.permutations(KuhnPoker.cards, 2):
+        calc_best_response(player.strat_map, br, 0, cards, '', 0, 1)
+        calc_best_response(player.strat_map, br, 1, cards, '', 0, 1)
+    for k,v in br.items():
+        old = br[k]
+        pure = np.zeros_like(old)
+        pure[old.argmin()] = 1
+        v[:] = pure
+    return Player(br)
+
+def calc_ev(p1_strat, p2_strat, cards, history, active_player):
+    if KuhnPoker.is_terminal(history):
+        return KuhnPoker.get_payoff(history, cards)
+    my_card = cards[active_player]
+    next_player = (active_player + 1) % 2
+    if active_player == 0:
+        strat = p1_strat[my_card + history]
+    else:
+        strat = p2_strat[my_card + history]
+    next_utilities = [calc_ev(p1_strat, p2_strat, cards, history + a, next_player) \
+                    for a in KuhnPoker.Actions]
+    return -np.dot(strat, next_utilities) 
+
+def ev(p1_strat, p2_strat):
+    expected_util = 0
+    for c in itertools.permutations(KuhnPoker.cards, 2):
+        expected_util += 1/6 * calc_ev(p1_strat, p2_strat, c, '', 0)
+    return expected_util
+
+def calc_expected_utility(players, history, cards, current_player):
+    if KuhnPoker.is_terminal(history):
+        payoff = KuhnPoker.get_payoff(history, cards)
         return KuhnPoker.get_payoff(history, cards)
 
     player = players[current_player]
     probs = player.strat_map[player.card+history]
-    next_utilities = [expected_utility(players, history+a, cards, -current_player) for a in KuhnPoker.Actions]
+    next_utilities = [calc_expected_utility(players, history+a, cards, -current_player) \
+                                                        for a in KuhnPoker.Actions]
+    
     return -np.dot(probs, next_utilities)
 
-def BEFEWP(players, history, cards, last_action, k):
-    tau = 0
-    k += 0
-    br = KuhnPokerTrainer()
-    br.best_response(players, 100000)
-    best_response = br.to_strat_map()
-    epsilon = V_STAR - exploitability #TODO
-    if epsilon <= k:
-        pi = best_response
-    else:
-        pi = player.strat_map
-
-    return np.random.choice(KuhnPoker.Actions, p=pi[player.card+history])
-
-def whole_expected_utility():
+def expected_utility(players, current_player=1):
     expected_util = 0
     for cards in itertools.permutations(KuhnPoker.cards, 2):
-        for player, card in zip(players, cards):
-            players[player].card = card
-        expected_util += 1/6 * expected_utility(players, '', cards, 1)
-    print(f"expected utility: {expected_util}")
+        players[1].card = cards[0]
+        players[-1].card = cards[1]
+        expected_util += 1/6 * calc_expected_utility(players, '', cards, current_player)
+    return expected_util
+
+def BEFEWP(players, history, cards, k):
+    me = players[1]
+    opp = players[-1]
+    brp = best_response(players)
+    players = wrap_players(brp, me)
+    tau = tau_player(players, history, me.card)
+
+    k += ev(tau.strat_map, opp.strat_map) - V_STAR
+    #print(f"k {k}")
+    e = V_STAR - ev(me.strat_map, brp.strat_map)
+    #print(f"e {e}")
+    players = wrap_players(me, opp)
+    if e <= -k:
+        brp.card = cards[1]
+        #print("best response")
+        return k, brp.get_action(history)
+    else:
+        return k, opp.get_action(history)
         
 if __name__ == '__main__':
     if len(sys.argv) < 2:
-        iterations = 100000
+        iterations = 10000
     else:
         iterations = int(sys.argv[1])
         
     np.set_printoptions(precision=2, floatmode='fixed', suppress=True)
 
-    """ 
-    print(f"\nRunning Kuhn Poker chance sampling CFR for {iterations} iterations")
-    cfr_trainer = KuhnPokerTrainer()
-    util = cfr_trainer.train(iterations)
-    strat_map = {history: node.get_average_strategy() \
-            for history, node in cfr_trainer.infoset_map.items()}
-    print(cfr_trainer.infoset_map['J'].regret_sum)
-    """
-   
-
     nash = {'Q': np.array([0.00, 1.00]), 'KB': np.array([1.00, 0.00]), \
-            'KC': np.array([1.00, 0.00]), 'QCB': np.array([0.45, 0.55]), \
-            'K': np.array([0.31, 0.69]), 'QB': np.array([0.33, 0.67]), \
+            'KC': np.array([1.00, 0.00]), 'QCB': np.array([.1+1/3, 2/3-.1]), \
+            'K': np.array([0.30, 0.70]), 'QB': np.array([1/3, 2/3]), \
             'QC': np.array([0.00, 1.00]), 'KCB': np.array([1.00, 0.00]), \
-            'JB': np.array([0.00, 1.00]), 'JC': np.array([0.32, 0.68]), \
+            'JB': np.array([0.00, 1.00]), 'JC': np.array([1/3, 2/3]), \
             'J': np.array([0.10, 0.90]), 'JCB': np.array([0.00, 1.00])}
+    
     strat_map = nash
     opp_map = strat_map.copy()
     me = Player(strat_map)
     opp = Player(opp_map)
-    opp.assign_mixed()
-    players = {1:me, -1:opp}
+    #me.assign_mixed()
+    players = wrap_players(me, opp)
 
-    br = KuhnPokerTrainer()
+    me.print_strat_map()
+    opp.print_strat_map()
+
+    total_payoff = 0
+    k = 0
+    for _ in range(100000):
+        history = ''
+        cards = KuhnPoker.deal(2, players)
+        current_player = 1
+        while not KuhnPoker.is_terminal(history):
+            if current_player == 1:
+                a = players[current_player].get_action(history)
+            else:
+                k, a = BEFEWP(players, history, cards, k)
+            current_player = -current_player
+            history += a
+        payoff = current_player*KuhnPoker.get_payoff(history, cards)    
+        total_payoff += payoff
+    print(f"total payoff {total_payoff}")
+
+"""
+-------------------------
+nash v. fixed  | -5904  |
+mixed v. fixed | -16690 |
+nash v. soe    | -6000  |
+mixed v. soe   | -41855 |
+------------------------
+"""
