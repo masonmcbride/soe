@@ -157,11 +157,13 @@ def wrap_players(p1, p2):
 
 def tau_player(players, history, card):
     best_r = best_response(players)
+    """
     last_action = history[0]
     pure = np.zeros(2)
     index = np.where(KuhnPoker.Actions == last_action)[0][0]
     pure[index] = 1
     best_r.strat_map[card+history] = pure
+    """
     return best_r
 
 def calc_best_response(node_map, br_strat_map, br_player, cards, history, active_player, prob):
@@ -174,7 +176,7 @@ def calc_best_response(node_map, br_strat_map, br_player, cards, history, active
     next_player = (active_player + 1) % 2
     if active_player == br_player:
         vals = [calc_best_response(node_map, br_strat_map, br_player, cards, history + action,
-                                   next_player, prob) for action in KuhnPoker.Actions]
+            next_player, prob) for action in KuhnPoker.Actions]
         best_response_value = max(vals)
         if key not in br_strat_map:
             br_strat_map[key] = np.array([0.0, 0.0])
@@ -183,8 +185,8 @@ def calc_best_response(node_map, br_strat_map, br_player, cards, history, active
     else:
         strategy = node_map[key]
         action_values = [calc_best_response(node_map, br_strat_map, br_player, cards,
-                                            history + action, next_player, prob * strategy[ix])
-                         for ix, action in enumerate(KuhnPoker.Actions)]
+            history + action, next_player, prob * strategy[ix])
+            for ix, action in enumerate(KuhnPoker.Actions)]
         return -np.dot(strategy, action_values)
 
 def best_response(players):
@@ -210,7 +212,7 @@ def calc_ev(p1_strat, p2_strat, cards, history, active_player):
     else:
         strat = p2_strat[my_card + history]
     next_utilities = [calc_ev(p1_strat, p2_strat, cards, history + a, next_player) \
-                    for a in KuhnPoker.Actions]
+            for a in KuhnPoker.Actions]
     return -np.dot(strat, next_utilities) 
 
 def ev(p1_strat, p2_strat):
@@ -227,8 +229,8 @@ def calc_expected_utility(players, history, cards, current_player):
     player = players[current_player]
     probs = player.strat_map[player.card+history]
     next_utilities = [calc_expected_utility(players, history+a, cards, -current_player) \
-                                                        for a in KuhnPoker.Actions]
-    
+            for a in KuhnPoker.Actions]
+
     return -np.dot(probs, next_utilities)
 
 def expected_utility(players, current_player=1):
@@ -236,35 +238,40 @@ def expected_utility(players, current_player=1):
     for cards in itertools.permutations(KuhnPoker.cards, 2):
         players[1].card = cards[0]
         players[-1].card = cards[1]
-        expected_util += 1/6 * calc_expected_utility(players, '', cards, current_player)
+        util = calc_expected_utility(players, '', cards, current_player)
+        expected_util += 1/6 * util
     return expected_util
 
 def BEFEWP(players, history, cards, k):
     me = players[1]
     opp = players[-1]
     brp = best_response(players)
+
+    e = V_STAR - ev(me.strat_map, brp.strat_map)
+    if e <= k:
+        brp.card = cards[1]
+        pi = brp
+    else:
+        pi = opp
     players = wrap_players(brp, me)
     tau = tau_player(players, history, me.card)
+    k += V_STAR - ev(tau.strat_map, brp.strat_map)
+    action = pi.get_action(history)
+    return k, action
 
-    k += ev(tau.strat_map, opp.strat_map) - V_STAR
-    #print(f"k {k}")
-    e = V_STAR - ev(me.strat_map, brp.strat_map)
-    #print(f"e {e}")
-    players = wrap_players(me, opp)
-    if e <= -k:
-        brp.card = cards[1]
-        #print("best response")
-        return k, brp.get_action(history)
-    else:
-        return k, opp.get_action(history)
-        
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         iterations = 10000
     else:
         iterations = int(sys.argv[1])
-        
+
     np.set_printoptions(precision=2, floatmode='fixed', suppress=True)
+    heavy = {'J': np.array([0.16, 0.84]), 'KB': np.array([0.97, 0.03]), \
+            'KC': np.array([0.70, 0.30]), 'JCB': np.array([1.0, 0.0]), \
+            'Q': np.array([0.25, 0.75]), 'JB': np.array([1., 0.]), \
+            'JC': np.array([0.30, 0.70]), 'QCB': np.array([0.98, 0.02]), \
+            'QB': np.array([0.59, 0.41]), 'QC': np.array([0.12, 0.88]), \
+            'K': np.array([0.90, 0.10]), 'KCB': np.array([0.85, 0.15])}
 
     nash = {'Q': np.array([0.00, 1.00]), 'KB': np.array([1.00, 0.00]), \
             'KC': np.array([1.00, 0.00]), 'QCB': np.array([.1+1/3, 2/3-.1]), \
@@ -272,25 +279,23 @@ if __name__ == '__main__':
             'QC': np.array([0.00, 1.00]), 'KCB': np.array([1.00, 0.00]), \
             'JB': np.array([0.00, 1.00]), 'JC': np.array([1/3, 2/3]), \
             'J': np.array([0.10, 0.90]), 'JCB': np.array([0.00, 1.00])}
-    
-    strat_map = nash
-    opp_map = strat_map.copy()
-    me = Player(strat_map)
-    opp = Player(opp_map)
+
+    me = Player(nash.copy())
+    opp = Player(nash.copy())
+    #opp.assign_mixed()
     #me.assign_mixed()
     players = wrap_players(me, opp)
 
-    me.print_strat_map()
-    opp.print_strat_map()
-
+    times = 100000
     total_payoff = 0
-    k = 0
-    for _ in range(100000):
+    k = -500
+    fixed = False
+    for _ in range(times):
         history = ''
         cards = KuhnPoker.deal(2, players)
         current_player = 1
         while not KuhnPoker.is_terminal(history):
-            if current_player == 1:
+            if fixed or current_player == 1:
                 a = players[current_player].get_action(history)
             else:
                 k, a = BEFEWP(players, history, cards, k)
@@ -304,7 +309,12 @@ if __name__ == '__main__':
 -------------------------
 nash v. fixed  | -5904  |
 mixed v. fixed | -16690 |
+heavy v. fixed | -34993 |
 nash v. soe    | -6000  |
 mixed v. soe   | -41855 |
+heavy v. soe   | -14482 |
 ------------------------
+
+
 """
+#NOTE EMAIL AUTHOR OF PAPER 
